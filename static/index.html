@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EvidenceDesk — 소상공인 문서 근거 답변</title>
+<style>
+  :root { --ink:#17202a; --sub:#5d6d7e; --line:#d5dbdb; --accent:#1a5276; --chip:#eaf2f8; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family:'Pretendard','Noto Sans KR',system-ui,sans-serif; background:#f7f9fb; color:var(--ink); }
+  header { background:var(--accent); color:#fff; padding:18px 24px; }
+  header h1 { margin:0; font-size:20px; }
+  header p { margin:4px 0 0; font-size:13px; opacity:.85; }
+  main { max-width:860px; margin:24px auto; padding:0 16px 60px; }
+  .card { background:#fff; border:1px solid var(--line); border-radius:12px; padding:18px; margin-bottom:16px; }
+  textarea { width:100%; min-height:64px; border:1px solid var(--line); border-radius:8px; padding:10px; font-size:15px; font-family:inherit; }
+  button { background:var(--accent); color:#fff; border:0; border-radius:8px; padding:10px 18px; font-size:15px; cursor:pointer; }
+  button:disabled { opacity:.5; }
+  .meta { font-size:12px; color:var(--sub); margin-top:8px; }
+  .chip { display:inline-block; background:var(--chip); color:var(--accent); border-radius:6px; padding:2px 8px; font-size:12px; margin:2px; cursor:pointer; }
+  .passage { border-left:3px solid var(--accent); background:#fbfcfd; padding:10px 12px; margin:8px 0; font-size:14px; }
+  .passage .src { font-size:12px; color:var(--sub); margin-bottom:4px; }
+  .answer { font-size:16px; line-height:1.7; white-space:pre-wrap; }
+  .badge { font-size:11px; border:1px solid var(--line); border-radius:10px; padding:1px 8px; color:var(--sub); }
+  .doc { font-size:13px; padding:6px 0; border-bottom:1px dashed var(--line); }
+  mark { background:#fdf2c0; }
+  #model{display:inline-block;max-width:100%;white-space:normal;line-height:1.5;word-break:keep-all}
+</style>
+</head>
+<body>
+<header>
+  <h1>EvidenceDesk</h1>
+  <p>소상공인 문서에서 근거를 찾아 답변 초안을 만드는 도구 — 모든 문장에 출처가 붙습니다 (샘플 데이터)</p>
+</header>
+<main>
+  <div class="card">
+    <strong>등록된 문서</strong> <span class="badge" id="model">…</span>
+    <div id="docs">불러오는 중…</div>
+  </div>
+  <div class="card">
+    <strong>내 문서 등록</strong> <span class="meta">TXT 붙여넣기 — 등록 즉시 질문 가능</span>
+    <div style="margin-top:8px"><input id="uptitle" placeholder="문서 제목" style="width:100%;padding:8px;border:1px solid var(--line);border-radius:8px"></div>
+    <div style="margin-top:6px"><textarea id="uptext" placeholder="문서 본문을 붙여넣으세요 (30자 이상)"></textarea></div>
+    <div style="margin-top:8px"><button onclick="upload()">등록</button> <span class="meta" id="upstatus"></span></div>
+  </div>
+  <div class="card">
+    <textarea id="q" placeholder="예: 부가가치세 신고 기한이 언제까지인가요?"></textarea>
+    <div style="margin-top:10px">
+      <button id="ask" onclick="ask()">근거 찾기</button>
+      <span class="meta" id="status"></span>
+    </div>
+  </div>
+  <div class="card" id="result" style="display:none">
+    <div class="answer" id="answer"></div>
+    <div class="meta" id="ansmeta"></div>
+    <div id="chips"></div>
+    <div id="passages"></div>
+  </div>
+</main>
+<footer style="text-align:center;color:#8a94a6;font-size:12px;padding:16px">Built with Llama · 모든 답변은 등록된 문서의 원문 인용이며 법률·세무 자문이 아닙니다</footer>
+<script>
+async function load() {
+  const d = await (await fetch('/api/docs')).json();
+  document.getElementById('model').textContent = d.model + ' · 청크 ' + d.chunks + '개';
+  document.getElementById('docs').innerHTML = d.docs.map(x => '<div class="doc">' + x.title + '</div>').join('');
+}
+function cite(m) { return '<span class="chip">[' + m + ']</span>'; }
+async function ask() {
+  const q = document.getElementById('q').value.trim();
+  if (!q) return;
+  const btn = document.getElementById('ask'); btn.disabled = true;
+  document.getElementById('status').textContent = '문서 검색 → Meta Llama 답변 생성 중…';
+  const r = await (await fetch('/api/ask', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({q})})).json();
+  btn.disabled = false;
+  document.getElementById('status').textContent = '';
+  const box = document.getElementById('result'); box.style.display = 'block';
+  let a = r.answer.replace(/\[(\d+)\]/g, (m, n) => cite(n));
+  document.getElementById('answer').innerHTML = a;
+  document.getElementById('ansmeta').textContent =
+    '생성 방식: ' + ({llm:'Meta Llama 3.2 1B (로컬) 근거 선택 + 원문 인용', fallback:'추출식 폴백 (모델 기술 오류, 고신뢰 검색만)', refused:'답변 보류 — 근거 부족'}[r.mode] || r.mode) + ' · ' + r.elapsed_ms + 'ms';
+  document.getElementById('passages').innerHTML = (r.passages || []).map(p =>
+    '<div class="passage" id="p' + p.cite + '"><div class="src">[' + p.cite + '] ' + p.title + '</div>' + p.text + '</div>').join('');
+}
+async function upload() {
+  const title = document.getElementById('uptitle').value.trim();
+  const text = document.getElementById('uptext').value.trim();
+  const st = document.getElementById('upstatus');
+  const r = await (await fetch('/api/upload', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({title, text})})).json();
+  if (r.ok) { st.textContent = '등록 완료 (청크 합계 ' + r.chunks + ')'; document.getElementById('uptext').value=''; load(); }
+  else { st.textContent = '실패: ' + (r.error || ''); }
+}
+load();
+// ?q=... auto-run (demo/screenshot support): real question through the real pipeline
+const q0 = new URLSearchParams(location.search).get('q');
+if (q0) { document.getElementById('q').value = q0; ask(); }
+</script>
+</body>
+</html>
