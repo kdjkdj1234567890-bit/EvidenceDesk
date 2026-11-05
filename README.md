@@ -31,7 +31,7 @@ Meta Global AI Developer Hackathon — Indie Developer Track, "Build for Your Wo
 | 지표 | 검색만 | 검색+Llama |
 |---|---|---|
 | 답변 가능 18건: 올바른 문서 인용 | 18/18 | 18/18 |
-| 답변 불가 6건: 정확한 거부 | 4/6 | 4/6 |
+| 답변 불가 6건: 정확한 거부 | 4/6 | 6/6 |
 | 평균 응답 | - | ~1.9s (모델 로드+선택 포함) |
 
 ## 3-arm 절제(ablation) 평가 (eval2.py, 동일 고정 질문)
@@ -40,7 +40,7 @@ Meta Global AI Developer Hackathon — Indie Developer Track, "Build for Your Wo
 |---|---|---|---|---|
 | A | 결정론적 검색만 (Llama 없음) | 18/18 | 16/18 (0.889) | 4/6 |
 | B | Llama passage 선택만 | 18/18 | 16/18 (0.889) | 4/6 |
-| C | 전체 파이프라인 (passage+문장 선택) | 18/18 | **17/18 (0.944)** | 4/6 |
+| C | 전체 파이프라인 (passage+문장 선택) | 18/18 | **17/18 (0.944)** | **6/6** |
 
 Llama의 관찰된 기여: 문서 수준에서는 검색과 동률, 문장 수준 근거 선택에서 16/18 → 17/18. **소규모 합성 평가 세트의 관찰값이며 일반적 성능 주장이 아닙니다.**
 결과 원본: `eval2-armA.json`, `eval2-armB.json`, `eval2-armC.json`.

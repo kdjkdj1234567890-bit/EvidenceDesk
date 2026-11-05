@@ -52,6 +52,26 @@ class Retriever:
     def _idf(self, g):
         return math.log(1 + self.N / (1 + self.df.get(g, 0)))
 
+    _GENERIC_TERMS = {"문서", "예시", "데모", "샘플", "가상", "것", "경우", "관련",
+                      "질문", "답변", "내용", "정보", "기준", "방법", "절차", "문의"}
+
+    def distinctive_terms(self, query):
+        """Content tokens of the query that are rare in this corpus. A token
+        qualifies when it is 2+ chars, not a generic word, appears in the corpus,
+        and appears in few chunks - so 'any document mentioning the topic' cannot
+        masquerade as evidence for a question about a specific subject."""
+        cap = max(1, -(-self.N // 7))  # ceil(N/7)
+        terms = set()
+        for tok in re.split(r"\s+", query):
+            t = re.sub(r"(은|는|이|가|을|를|의|에|에서|으로|로|도|만|까지|부터|하고|와|과)$", "", tok)
+            t = re.sub(r"(인가요|까요|나요|가요|궁금합니다|알려주세요|알고|싶어요|추천해줘|해주세요)$", "", t)
+            if len(t) < 2 or t in self._GENERIC_TERMS or not re.search(r"[가-힣]", t):
+                continue
+            df = sum(1 for c in self.chunks if t in c["text"])
+            if 1 <= df <= cap:
+                terms.add(t)
+        return terms
+
     def search(self, query, k=4):
         q = ngrams(query)
         scores = []
@@ -138,14 +158,18 @@ def _question_type(query):
         return "money"
     return None
 
-def _evidence_ok(query, sent):
+def _evidence_ok(query, sent, dg=None):
     """Relation-aware check: quoted sentence must share content n-grams with the
-    query and, for when/value questions, actually carry that kind of fact."""
+    query and, for when/value questions, actually carry that kind of fact.
+    When distinctive query grams are supplied, the sentence must carry at least
+    one - an amount/date from an unrelated document is not evidence."""
     if not (set(ngrams(sent)) & _content_grams(query)):
+        return False
+    if dg and not any(t in sent for t in dg):
         return False
     t = _question_type(query)
     if t == "when":
-        return bool(re.search(r"\d+\s*(월|분기)|부터|까지|이내|이전|이후|요일|시점", sent))
+        return bool(re.search(r"\d+\s*(월|분기)|부터|까지|이내|이전|이후|요일|시점|\d+\s*(개월|일|주)\s*(전|후)", sent))
     if t == "years":
         return bool(re.search(r"\d+\s*년", sent))
     if t == "count":
@@ -156,15 +180,15 @@ def _evidence_ok(query, sent):
         return bool(re.search(r"\d[\d,.]*\s*(%|원|만|억|천|배)", sent))
     return True
 
-def _best_evidence_sentence(query, text):
+def _best_evidence_sentence(query, text, dg=None):
     sents = [s.strip() for s in re.split(r"(?<=[.?!])\s+", text) if len(s.strip()) > 5]
-    cands = [s for s in sents if _evidence_ok(query, s)]
+    cands = [s for s in sents if _evidence_ok(query, s, dg)]
     if not cands:
         return None
     qg = set(ngrams(query))
     return max(cands, key=lambda s: len(set(ngrams(s)) & qg))
 
-def llm_answer(query, passages, timeout=90):
+def llm_answer(query, passages, timeout=90, dg=None):
     """Meta Llama picks which retrieved passages hold the answer; deterministic
     code then quotes the best verbatim sentence from each picked passage.
     Returns None when the model's pick fails validation (caller falls back)."""
@@ -197,8 +221,8 @@ def llm_answer(query, passages, timeout=90):
         sent = _llm_pick_sentence(query, text)
         # accept the model's sentence only when it passes the same
         # relation-aware evidence check; otherwise best passing candidate
-        if sent is None or not _evidence_ok(query, sent):
-            sent = _best_evidence_sentence(query, text)
+        if sent is None or not _evidence_ok(query, sent, dg):
+            sent = _best_evidence_sentence(query, text, dg)
         if sent is None:
             continue
         parts.append(f"{sent} [{p}]")
@@ -214,11 +238,11 @@ def llm_answer(query, passages, timeout=90):
         seen.add(key); dparts.append(s); dused.append(p)
     return ("ok", {"answer": " ".join(dparts), "citations": dused, "model": MODEL_NAME})
 
-def extractive_fallback(query, passages):
+def extractive_fallback(query, passages, dg=None):
     """Deterministic answer: quote the best evidence sentences with citations."""
     out, cites = [], []
     for p in passages[:2]:
-        best = _best_evidence_sentence(query, p["text"])
+        best = _best_evidence_sentence(query, p["text"], dg)
         if best is None:
             continue
         out.append(f"{best.strip()} [{p['cite']}]")
@@ -251,11 +275,21 @@ def answer(query, chunks):
             return {"answer": REFUSAL, "citations": [], "passages": [],
                     "model": "none", "mode": "refused"}
     r = Retriever(chunks)
+    dg = r.distinctive_terms(query) if _question_type(query) else set()
     passages = r.search(query)
     if not passages:
         return {"answer": REFUSAL, "citations": [], "passages": [],
                 "model": "none", "mode": "refused"}
-    status, res = llm_answer(query, passages)
+    if dg:
+        grounded = [p for p in passages
+                    if any(t in p["text"] for t in dg)]
+        if not grounded:
+            return {"answer": REFUSAL, "citations": [], "passages": passages,
+                    "model": "none", "mode": "refused"}
+        passages = grounded
+        for i, p in enumerate(passages):
+            p["cite"] = i + 1
+    status, res = llm_answer(query, passages, dg=dg)
     if status == "ok":
         res["passages"] = passages
         res["mode"] = "llm"
@@ -264,7 +298,7 @@ def answer(query, chunks):
         return {"answer": REFUSAL, "citations": [], "passages": passages,
                 "model": MODEL_NAME, "mode": "refused"}
     if passages[0]["score"] >= 4.0:
-        res = extractive_fallback(query, passages)
+        res = extractive_fallback(query, passages, dg=dg)
         if res is not None:
             res["passages"] = passages
             res["mode"] = "fallback"
